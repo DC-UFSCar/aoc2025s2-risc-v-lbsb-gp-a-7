@@ -5,46 +5,20 @@ module riscvmulti (
     output [31:0] WriteData,
     output 	      MemWrite,
     input  [31:0] ReadData,
-    output  [3:0] WriteMask, 
-    output logic  halt = 0); 
+    output [3:0] WriteMask,
+    output logic halt = 0); 
 
     logic [31:0] instr, PC = 0;
 
-    
-    wire writeBackEn = ((state == EXECUTE) && !isBranch && !isStore && !isSYSTEM &&  !isLoad) || (state == WAIT_DATA);
-     wire [31:0] writeBackData = isLoad ? readdataF :
-                                (isJAL || isJALR) ? PCplus4:
-                                isAUIPC           ? PCTarget:
-                                isLUI             ? Uimm:
-                                ALUResult;
-
-                            
-    wire [31:0] LoadStoreAddress = aluPlus;
-    assign Address = (state == FETCH_INSTR || state == WAIT_INSTR) ? PC : LoadStoreAddress;
+    wire writeBackEn = (state == EXECUTE && (isALUreg || isALUimm || isJALR || isJAL || isAUIPC || isLUI)) || (state == WAIT_DATA);
+    wire [31:0] writeBackData = (state == WAIT_DATA) ? LOAD_data :
+                            (isLUI) ? Uimm :
+                            (isAUIPC) ? PCTarget :
+                            (isJAL || isJALR) ? PCplus4 :
+                            ALUResult;
+    wire [31:0] LoadStoreAddress = rs1 + (isStore ? Simm: Iimm);
+    assign Address = (state == WAIT_INSTR || state == FETCH_INSTR) ? PC : LoadStoreAddress;
     assign MemWrite = (state == STORE);
-    assign WriteData = rs2;
-
-     wire sb = (funct3 == 000);
-    wire sh = (funct3 == 000);
-    assign WriteMask = sb ? ((LoadStoreAddress[1:0] == 2'b11) ? 4'b1000 :
-                            (LoadStoreAddress[1:0] == 2'b10) ? 4'b0100 :
-                            (LoadStoreAddress[1:0] == 2'b01) ? 4'b0010 : 4'b0001 ): 
-                            (sh ? (LoadStoreAddress[1] ? 4'b1100 : 4'b0011) : 4'b1111);
-
-
-    wire lb = (funct3 == 000);
-    wire lh = (funct3 == 001);
-    wire lbu = (funct3 == 100);
-    wire lhu = (funct3 == 101);
-
-    wire [15:0] halfwordL = LoadStoreAddress[1] ? ReadData[31:16] : ReadData[15:0]; 
-    wire [7:0] byteL = LoadStoreAddress[0] ? halfwordL[15:8] : halfwordL[7:0];
-    wire [31:0] readdataF = lb ? {{24{byteL[7]}},byteL[7:0]}:
-                            lh ? {{16{halfwordL[15]}},halfwordL[15:0]} :
-                            lbu ? {{24{1'b0}},byteL[7:0]} :
-                            lhu ? {{16{1'b0}},halfwordL[15:0]} : ReadData;
-
-
     // The 10 RISC-V instructions
     wire isALUreg  =  (instr[6:0] == 7'b0110011); // rd <- rs1 OP rs2   
     wire isALUimm  =  (instr[6:0] == 7'b0010011); // rd <- rs1 OP Iimm
@@ -56,7 +30,6 @@ module riscvmulti (
     wire isLoad    =  (instr[6:0] == 7'b0000011); // rd <- mem[rs1+Iimm]
     wire isStore   =  (instr[6:0] == 7'b0100011); // mem[rs1+Simm] <- rs2
     wire isSYSTEM  =  (instr[6:0] == 7'b1110011); // special
-    wire isEBREAK  =  (isSYSTEM && (instr[14:12] == 3'b000));
 
     // The 5 immediate formats
     wire [31:0] Uimm={    instr[31],   instr[30:12], {12{1'b0}}};
@@ -81,8 +54,7 @@ module riscvmulti (
 
     // The ALU
     wire [31:0] SrcA = rs1;
-    wire [31:0] SrcB = isALUreg | isBranch ? rs2 : 
-                       isStore             ? Simm : Iimm;
+    wire [31:0] SrcB = isALUreg | isBranch ? rs2 : Iimm;
     wire [ 4:0] shamt  = isALUreg ? rs2[4:0] : instr[24:20]; // shift amount
 
     // The adder is used by both arithmetic instructions and JALR.
@@ -148,11 +120,60 @@ module riscvmulti (
     // An adder used to compute branch address, JAL address and AUIPC.
     // branch->PC+Bimm    AUIPC->PC+Uimm    JAL->PC+Jimm
     wire [31:0] PCplus4  = PC + 4;
-    wire [31:0] PCTarget = PC + (isJAL ? Jimm : isAUIPC ? Uimm : Bimm);
+     wire [31:0] PCTarget = PC + ( instr[3] ? Jimm[31:0] :
+				  instr[4] ? Uimm[31:0] :
+				             Bimm[31:0] );
     wire [31:0] PCNext = ((isBranch && takeBranch) || isJAL) ? PCTarget :
                                                       isJALR ? {aluPlus[31:1],1'b0} :
                                                                PCplus4;
+    wire mem_byteAccess     = funct3[1:0] == 2'b00;
+    wire mem_halfwordAccess = funct3[1:0] == 2'b01;
 
+
+    wire [15:0] LOAD_halfword =
+	       LoadStoreAddress[1] ? ReadData[31:16] : ReadData[15:0];
+
+    wire  [7:0] LOAD_byte =
+	       LoadStoreAddress[0] ? LOAD_halfword[15:8] : LOAD_halfword[7:0];
+
+   // LOAD, in addition to funct3[1:0], LOAD depends on:
+   // - funct3[2] (instr[14]): 0->do sign expansion   1->no sign expansion
+    wire LOAD_sign = !funct3[2] & (mem_byteAccess ? LOAD_byte[7] : LOAD_halfword[15]);
+
+    wire [31:0] LOAD_data =
+         mem_byteAccess ? {{24{LOAD_sign}},     LOAD_byte} :
+     mem_halfwordAccess ? {{16{LOAD_sign}}, LOAD_halfword} :
+                          ReadData ;
+
+   // Store
+   // ------------------------------------------------------------------------
+
+   assign WriteData[ 7: 0] = rs2[7:0];
+   assign WriteData[15: 8] = LoadStoreAddress[0] ? rs2[7:0]  : rs2[15: 8];
+   assign WriteData[23:16] = LoadStoreAddress[1] ? rs2[7:0]  : rs2[23:16];
+   assign WriteData[31:24] = LoadStoreAddress[0] ? rs2[7:0]  :
+			     LoadStoreAddress[1] ? rs2[15:8] : rs2[31:24];
+
+   // The memory write mask:
+   //    1111                     if writing a word
+   //    0011 or 1100             if writing a halfword
+   //                                (depending on LoadStoreAddress[1])
+   //    0001, 0010, 0100 or 1000 if writing a byte
+   //                                (depending on LoadStoreAddress[1:0])
+
+    wire [3:0]  mem_wmask; // Declaracao da mascara
+
+    wire [3:0] STORE_wmask =
+	      mem_byteAccess      ?
+	            (LoadStoreAddress[1] ?
+		          (LoadStoreAddress[0] ? 4'b1000 : 4'b0100) :
+		          (LoadStoreAddress[0] ? 4'b0010 : 4'b0001)
+                    ) :
+	      mem_halfwordAccess ?
+	            (LoadStoreAddress[1] ? 4'b1100 : 4'b0011) :
+              4'b1111;
+
+    assign WriteMask = {4{(state == STORE)}} & STORE_wmask;
 
     // The state machine
     localparam FETCH_INSTR = 0;
@@ -187,13 +208,9 @@ module riscvmulti (
                     state <= EXECUTE;
                 end
                 EXECUTE: begin
-                    if (!isSYSTEM)
+                    if (!isSYSTEM) begin
                         PC <= PCNext;
-                    else
-                        if (isEBREAK) begin
-                            PC <= PC; // halt
-                            halt <= 1;
-                        end
+                    end
                     state <= isLoad  ? LOAD  : 
                              isStore ? STORE : 
                                        FETCH_INSTR;
@@ -209,11 +226,4 @@ module riscvmulti (
                 end
             endcase 
         end
-
-    always @(posedge clk) begin
-        if (halt) begin
-            $writememh("regs.out", RegisterBank);
-            #10 $finish();
-        end
-    end
 endmodule

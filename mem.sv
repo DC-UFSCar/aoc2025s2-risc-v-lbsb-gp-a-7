@@ -12,16 +12,13 @@ module mem (
 
   assign rd = RAM[a[31:2]]; // word aligned
 
- always_ff @(posedge clk)
-    if (we)begin
-      case (wm)
-        4'b1100: RAM[a[31:2]][31:16] <= wd[15:0];
-        4'b0011: RAM[a[31:2]][15:0] <= wd[15:0];
-        4'b1000: RAM[a[31:2]][31:24] <= wd[7:0];
-        4'b0100: RAM[a[31:2]][23:16] <= wd[7:0];
-        4'b0010: RAM[a[31:2]][15:8] <= wd[7:0];
-        4'b0001: RAM[a[31:2]][7:0] <= wd[7:0];
-        default: RAM[a[31:2]] <= wd;
-      endcase
+   always_ff @(posedge clk)
+  begin
+    if (we) begin
+      if(wm[0]) RAM[a[31:2]][ 7:0 ] <= wd[ 7:0 ];
+      if(wm[1]) RAM[a[31:2]][15:8 ] <= wd[15:8 ];
+      if(wm[2]) RAM[a[31:2]][23:16] <= wd[23:16];
+      if(wm[3]) RAM[a[31:2]][31:24] <= wd[31:24];	
     end
+  end
 endmodule
