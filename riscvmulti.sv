@@ -10,12 +10,40 @@ module riscvmulti (
 
     logic [31:0] instr, PC = 0;
 
-    wire writeBackEn = // Quando se escreve no banco de registradores?
-    wire [31:0] writeBackData = // O que se escreve no banco de registradores?
-    wire [31:0] LoadStoreAddress = // Como se calcula o endereço de memória para loads e stores?
-    assign Address = // Qual o endereço de memória a ser acessado? Alternar entre .text e .data dependendo do estado
-    assign MemWrite = // Em que estado se escreve na memória?
-    assign WriteData = // O que se escreve na memória?
+    
+    wire writeBackEn = ((state == EXECUTE) && !isBranch && !isStore && !isSYSTEM &&  !isLoad) || (state == WAIT_DATA);
+     wire [31:0] writeBackData = isLoad ? readdataF :
+                                (isJAL || isJALR) ? PCplus4:
+                                isAUIPC           ? PCTarget:
+                                isLUI             ? Uimm:
+                                ALUResult;
+
+                            
+    wire [31:0] LoadStoreAddress = aluPlus;
+    assign Address = (state == FETCH_INSTR || state == WAIT_INSTR) ? PC : LoadStoreAddress;
+    assign MemWrite = (state == STORE);
+    assign WriteData = rs2;
+
+     wire sb = (funct3 == 000);
+    wire sh = (funct3 == 000);
+    assign WriteMask = sb ? ((LoadStoreAddress[1:0] == 2'b11) ? 4'b1000 :
+                            (LoadStoreAddress[1:0] == 2'b10) ? 4'b0100 :
+                            (LoadStoreAddress[1:0] == 2'b01) ? 4'b0010 : 4'b0001 ): 
+                            (sh ? (LoadStoreAddress[1] ? 4'b1100 : 4'b0011) : 4'b1111);
+
+
+    wire lb = (funct3 == 000);
+    wire lh = (funct3 == 001);
+    wire lbu = (funct3 == 100);
+    wire lhu = (funct3 == 101);
+
+    wire [15:0] halfwordL = LoadStoreAddress[1] ? ReadData[31:16] : ReadData[15:0]; 
+    wire [7:0] byteL = LoadStoreAddress[0] ? halfwordL[15:8] : halfwordL[7:0];
+    wire [31:0] readdataF = lb ? {{24{byteL[7]}},byteL[7:0]}:
+                            lh ? {{16{halfwordL[15]}},halfwordL[15:0]} :
+                            lbu ? {{24{1'b0}},byteL[7:0]} :
+                            lhu ? {{16{1'b0}},halfwordL[15:0]} : ReadData;
+
 
     // The 10 RISC-V instructions
     wire isALUreg  =  (instr[6:0] == 7'b0110011); // rd <- rs1 OP rs2   
@@ -53,7 +81,8 @@ module riscvmulti (
 
     // The ALU
     wire [31:0] SrcA = rs1;
-    wire [31:0] SrcB = isALUreg | isBranch ? rs2 : Iimm;
+    wire [31:0] SrcB = isALUreg | isBranch ? rs2 : 
+                       isStore             ? Simm : Iimm;
     wire [ 4:0] shamt  = isALUreg ? rs2[4:0] : instr[24:20]; // shift amount
 
     // The adder is used by both arithmetic instructions and JALR.
